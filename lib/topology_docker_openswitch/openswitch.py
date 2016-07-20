@@ -44,6 +44,7 @@ from socket import AF_UNIX, SOCK_STREAM, socket, gethostname
 import yaml
 
 config_timeout = 300
+ops_switchd_active_timeout = 60
 swns_netns = '/var/run/netns/swns'
 hwdesc_dir = '/etc/openswitch/hwdesc'
 db_sock = '/var/run/openvswitch/db.sock'
@@ -201,9 +202,9 @@ def main():
         raise Exception('Timed out while waiting for switchd pid.')
 
     logging.info('Waiting for ops-switchd to become active...')
-    for i in range(0, config_timeout):
+    for i in range(0, ops_switchd_active_timeout):
         if not ops_switchd_is_active():
-            sleep(0.1)
+            sleep(1)
         else:
             break
     else:
