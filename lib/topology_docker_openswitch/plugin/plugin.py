@@ -19,6 +19,7 @@ from os.path import exists, basename, splitext
 from os import makedirs
 from shutil import copytree, Error
 from logging import warning
+from time import strftime
 
 
 def pytest_runtest_teardown(item):
@@ -34,7 +35,7 @@ def pytest_runtest_teardown(item):
             logs_path = '/var/log/messages'
             for node in topology.nodes:
                 node_obj = topology.get(node)
-                if node_obj.metadata['type'] == 'openswitch':
+                if node_obj.metadata.get('type', None) == 'openswitch':
                     shared_dir = node_obj.shared_dir
                     try:
                         node_obj.send_command(
@@ -49,8 +50,8 @@ def pytest_runtest_teardown(item):
                             'Unable to get {} from container'.format(logs_path)
                         )
                     test_suite = splitext(basename(item.parent.name))[0]
-                    path_name = '/tmp/{}_{}_{}'.format(
-                        test_suite, item.name, str(id(item))
+                    path_name = '/tmp/mod_framework/{}_{}_{}'.format(
+                        test_suite, item.name, strftime("%Y%m%d_%H%M%S")
                     )
                     if not exists(path_name):
                         makedirs(path_name)
