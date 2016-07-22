@@ -25,11 +25,19 @@ from __future__ import unicode_literals, absolute_import
 from __future__ import print_function, division
 
 from json import loads
-from subprocess import check_call
+from subprocess import check_output, CalledProcessError
+from platform import system, linux_distribution
+from logging import StreamHandler, getLogger, INFO, Formatter
+from sys import stdout
 
 from topology_docker.node import DockerNode
 from topology_docker.shell import DockerShell, DockerBashShell
 
+# When a failure happens during boot time, logs and other information is
+# collected to help with the debugging. The path of this collection is to be
+# stored here at module level to be able to import it in the pytest teardown
+# hook later. Non-failing containers will append their log paths here also.
+LOG_PATHS = []
 
 SETUP_SCRIPT = """\
 import logging
@@ -233,20 +241,49 @@ if __name__ == '__main__':
     main()
 """
 
+LOG = getLogger(__name__)
+LOG_HDLR = StreamHandler(stream=stdout)
+LOG_HDLR.setFormatter(Formatter('%(asctime)s %(message)s'))
+LOG_HDLR.setLevel(INFO)
+LOG.addHandler(LOG_HDLR)
+LOG.setLevel(INFO)
 
-PROCESS_LOG = """
-#!/bin/bash
-ovs-vsctl list Daemon >> /tmp/logs
-echo "Coredump -->" >> /tmp/logs
-coredumpctl gdb >> /tmp/logs
-echo "All the running processes:" >> /tmp/logs
-ps -aef >> /tmp/logs
 
-systemctl status >> /tmp/systemctl
-systemctl --state=failed --all >> /tmp/systemctl
+def log_commands(
+    commands, location, function, escape=True,
+    prefix=None, suffix=None, **kwargs
+):
+    if prefix is None:
+        prefix = ''
+    if suffix is None:
+        suffix = ''
 
-ovsdb-client dump >> /tmp/ovsdb_dump
-"""
+    for command in commands:
+        log_path = ' >> {} 2>&1'.format(location)
+        args = [
+            r'{prefix}echo \"Output of:'
+            r' {command}{log_path}\"{log_path}{suffix}'.format(
+                prefix=prefix, command=command,
+                log_path=log_path, suffix=suffix
+            ),
+            r'{}{}{}{}'.format(
+                prefix, command, log_path, suffix
+            ),
+            r'{}echo \"\"{}{}'.format(prefix, log_path, suffix)
+        ]
+
+        for arg in args:
+            try:
+                if not escape:
+                    arg = arg.replace('\\', '')
+                function(arg, **kwargs)
+
+            except CalledProcessError as error:
+                LOG.warning(
+                    '{} failed with error {}.'.format(
+                        command, error.returncode
+                    )
+                )
 
 
 class OpenSwitchNode(DockerNode):
@@ -324,42 +361,100 @@ class OpenSwitchNode(DockerNode):
         #. Create remaining interfaces.
         """
 
-        # Write the log gathering script
-        process_log = '{}/process_log.sh'.format(self.shared_dir)
-        with open(process_log, "w") as fd:
-            fd.write(PROCESS_LOG)
-        check_call('chmod 755 {}/process_log.sh'.format(self.shared_dir),
-                   shell=True)
-
         # Write and execute setup script
         setup_script = '{}/openswitch_setup.py'.format(self.shared_dir)
         with open(setup_script, 'w') as fd:
             fd.write(SETUP_SCRIPT)
 
         try:
-            self._docker_exec('python {}/openswitch_setup.py -d'
-                              .format(self.shared_dir_mount))
+            self._docker_exec(
+                'python {}/openswitch_setup.py -d'.format(
+                    self.shared_dir_mount
+                )
+            )
         except Exception as e:
-            check_call('touch {}/logs'.format(self.shared_dir), shell=True)
-            check_call('chmod 766 {}/logs'.format(self.shared_dir),
-                       shell=True)
-            self._docker_exec('/bin/bash {}/process_log.sh'
-                              .format(self.shared_dir_mount))
-            check_call(
-                'tail -n 2000 /var/log/syslog > {}/syslog'.format(
-                    self.shared_dir
-                ), shell=True)
-            check_call(
-                'docker ps -a >> {}/logs'.format(self.shared_dir),
+            global FAIL_LOG_PATH
+            lines_to_dump = 100
+
+            platforms_log_location = {
+                'Ubuntu': 'cat /var/log/upstart/docker.log',
+                'CentOS Linux': 'grep docker /var/log/daemon.log',
+                # FIXME: find the right values for the next dictionary keys:
+                # 'boot2docker': 'cat /var/log/docker.log',
+                # 'debian': 'cat /var/log/daemon.log',
+                # 'fedora': 'journalctl -u docker.service',
+                # 'red hat': 'grep docker /var/log/messages',
+                # 'opensuse': 'journalctl -u docker.service'
+            }
+
+            # Here, we find the command to dump the last "lines_to_dump" lines
+            # of the docker log file in the logs. The location of the docker
+            # log file depends on the Linux distribution. These locations are
+            # defined the in "platforms_log_location" dictionary.
+
+            operating_system = system()
+
+            if operating_system != 'Linux':
+                LOG.warning(
+                    'Operating system is not Linux but {}.'.format(
+                        operating_system
+                    )
+                )
+                return
+
+            linux_distro = linux_distribution()[0]
+
+            if linux_distro not in platforms_log_location.keys():
+                LOG.warning(
+                    'Unknown Linux distribution {}.'.format(
+                        linux_distro
+                    )
+                )
+
+            docker_log_command = '{} | tail -n {}'.format(
+                platforms_log_location[linux_distro], lines_to_dump
+            )
+
+            container_commands = [
+                'ovs-vsctl list Daemon',
+                'coredumpctl gdb',
+                'ps -aef',
+                'systemctl status',
+                'systemctl --state=failed --all',
+                'ovsdb-client dump',
+                'systemctl status switchd -n 10000 -l',
+                'cat /var/log/messages'
+            ]
+
+            execution_machine_commands = [
+                'tail -n 2000 /var/log/syslog',
+                'docker ps -a',
+                docker_log_command
+            ]
+
+            log_commands(
+                container_commands,
+                '{}/container_logs'.format(self.shared_dir_mount),
+                self._docker_exec,
+                prefix=r'sh -c "',
+                suffix=r'"'
+            )
+            log_commands(
+                execution_machine_commands,
+                '{}/execution_machine_logs'.format(self.shared_dir),
+                check_output,
+                escape=False,
                 shell=True
             )
-            check_call('cat {}/logs'.format(self.shared_dir), shell=True)
-            raise e
+            LOG_PATHS.append(self.shared_dir)
 
+            raise e
         # Read back port mapping
         port_mapping = '{}/port_mapping.json'.format(self.shared_dir)
         with open(port_mapping, 'r') as fd:
             mappings = loads(fd.read())
+
+        LOG_PATHS.append(self.shared_dir)
 
         if hasattr(self, 'ports'):
             self.ports.update(mappings)

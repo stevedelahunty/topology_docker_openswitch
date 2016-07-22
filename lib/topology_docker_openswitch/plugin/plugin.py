@@ -15,58 +15,88 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from os.path import exists, basename, splitext
-from os import makedirs
-from shutil import copytree, Error
+from os.path import exists, basename, splitext, join
+from shutil import copytree, Error, rmtree
 from logging import warning
+from datetime import datetime
+
+from topology_docker_openswitch.openswitch import log_commands
 
 
 def pytest_runtest_teardown(item):
     """
-    pytest hook to get the name of the test executed, it creates a folder with
-    the name, then copies the folders defined in the shared_dir_mount attribute
-    of each openswitch container, additionally the /var/log/messages of the
-    container is copied to the same folder.
+    Pytest hook to get node information after the test executed.
+
+    This creates a folder with the name of the test case, copies the folders
+    defined in the shared_dir_mount attribute of each openswitch container
+    and the /var/log/messages file inside.
+
+    FIXME: document the item argument
     """
-    if 'topology' in item.funcargs:
-        topology = item.funcargs['topology']
-        if topology.engine == 'docker':
-            logs_path = '/var/log/messages'
-            for node in topology.nodes:
-                node_obj = topology.get(node)
-                if node_obj.metadata.get('type', 'none') == 'openswitch':
-                    shared_dir = node_obj.shared_dir
-                    try:
-                        node_obj.send_command(
-                            'cat {} > {}/var_messages.log'.format(
-                                logs_path, node_obj.shared_dir_mount
-                            ),
-                            shell='bash',
-                            silent=True
+    test_suite = splitext(basename(item.parent.name))[0]
+    path_name = '/tmp/topology/docker/{}_{}_{}'.format(
+        test_suite, item.name, datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+    )
+
+    # Being extra-prudent here
+    if exists(path_name):
+        rmtree(path_name)
+
+    if 'topology' not in item.funcargs:
+        from topology_docker_openswitch.openswitch import LOG_PATHS
+
+        for log_path in LOG_PATHS:
+            try:
+                copytree(log_path, join(path_name, basename(log_path)))
+                rmtree(path_name)
+            except Error as err:
+                errors = err.args[0]
+                for error in errors:
+                    src, dest, msg = error
+                    warning(
+                        'Unable to copy file {}, Error {}'.format(
+                            src, msg
                         )
-                    except Error:
-                        warning(
-                            'Unable to get {} from container'.format(logs_path)
-                        )
-                    test_suite = splitext(basename(item.parent.name))[0]
-                    path_name = '/tmp/{}_{}_{}'.format(
-                        test_suite, item.name, str(id(item))
                     )
-                    if not exists(path_name):
-                        makedirs(path_name)
-                    try:
-                        copytree(
-                            shared_dir, '{}/{}'.format(
-                                path_name,
-                                basename(shared_dir)
-                            )
-                        )
-                    except Error as err:
-                        errors = err.args[0]
-                        for error in errors:
-                            src, dest, msg = error
-                            warning(
-                                'Unable to copy file {}, Error {}'.format(
-                                    src, msg
-                                )
-                            )
+        return
+
+    topology = item.funcargs['topology']
+
+    if topology.engine != 'docker':
+        return
+
+    logs_path = '/var/log/messages'
+
+    for node in topology.nodes:
+        node_obj = topology.get(node)
+
+        if node_obj.metadata.get('type', None) != 'openswitch':
+            return
+
+        shared_dir = node_obj.shared_dir
+
+        try:
+            commands = ['cat {}'.format(logs_path)]
+            log_commands(
+                commands, join(node_obj.shared_dir_mount, 'container_logs'),
+                node_obj._docker_exec, prefix=r'sh -c "', suffix=r'"'
+            )
+        except:
+            warning(
+                'Unable to get {} from node {}.'.format(
+                    logs_path, node_obj.identifier
+                )
+            )
+
+        try:
+            copytree(shared_dir, join(path_name, basename(shared_dir)))
+            rmtree(shared_dir)
+        except Error as err:
+            errors = err.args[0]
+            for error in errors:
+                src, dest, msg = error
+                warning(
+                    'Unable to copy file {}, Error {}'.format(
+                        src, msg
+                    )
+                )
