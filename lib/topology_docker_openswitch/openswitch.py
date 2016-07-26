@@ -57,7 +57,7 @@ swns_netns = '/var/run/netns/swns'
 hwdesc_dir = '/etc/openswitch/hwdesc'
 db_sock = '/var/run/openvswitch/db.sock'
 switchd_pid = '/var/run/openvswitch/ops-switchd.pid'
-query = {
+query_cur_hw = {
     'method': 'transact',
     'params': [
         'OpenSwitch',
@@ -66,6 +66,19 @@ query = {
             'table': 'System',
             'where': [],
             'columns': ['cur_hw']
+        }
+    ],
+    'id': id(db_sock)
+}
+query_cur_cfg = {
+    'method': 'transact',
+    'params': [
+        'OpenSwitch',
+        {
+            'op': 'select',
+            'table': 'System',
+            'where': [],
+            'columns': ['cur_cfg']
         }
     ],
     'id': id(db_sock)
@@ -149,15 +162,27 @@ def create_interfaces():
     check_call(shsplit('touch /tmp/ops-virt-ports-ready'))
     logging.info('  - Ports readiness notified to the image')
 
+def cur_hw_is_set():
+    global sock
+    if sock is None:
+        sock = socket(AF_UNIX, SOCK_STREAM)
+        sock.connect(db_sock)
+    sock.send(dumps(query_cur_hw))
+    response = loads(sock.recv(4096))
+    try:
+        return response['result'][0]['rows'][0]['cur_hw'] == 1
+    except IndexError:
+        return 0
+
 def cur_cfg_is_set():
     global sock
     if sock is None:
         sock = socket(AF_UNIX, SOCK_STREAM)
         sock.connect(db_sock)
-    sock.send(dumps(query))
+    sock.send(dumps(query_cur_cfg))
     response = loads(sock.recv(4096))
     try:
-        return response['result'][0]['rows'][0]['cur_hw'] == 1
+        return response['result'][0]['rows'][0]['cur_cfg'] == 1
     except IndexError:
         return 0
 
@@ -200,6 +225,24 @@ def main():
     else:
         raise Exception('Timed out while waiting for DB socket.')
 
+    logging.info('Waiting for cur_hw...')
+    for i in range(0, config_timeout):
+        if not cur_hw_is_set():
+            sleep(0.1)
+        else:
+            break
+    else:
+        raise Exception('Timed out while waiting for cur_hw.')
+
+    logging.info('Waiting for cur_cfg...')
+    for i in range(0, config_timeout):
+        if not cur_cfg_is_set():
+            sleep(0.1)
+        else:
+            break
+    else:
+        raise Exception('Timed out while waiting for cur_cfg.')
+
     logging.info('Waiting for switchd pid...')
     for i in range(0, config_timeout):
         if not exists(switchd_pid):
@@ -228,14 +271,6 @@ def main():
     else:
         raise Exception('Timed out while waiting for final hostname.')
 
-    logging.info('Waiting for cur_cfg...')
-    for i in range(0, config_timeout):
-        if not cur_cfg_is_set():
-            sleep(0.1)
-        else:
-            break
-    else:
-        raise Exception('Timed out while waiting for cur_cfg.')
 
 if __name__ == '__main__':
     main()
