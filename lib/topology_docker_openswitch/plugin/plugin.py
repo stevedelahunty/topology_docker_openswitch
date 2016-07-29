@@ -47,7 +47,12 @@ def pytest_runtest_teardown(item):
 
         for log_path in LOG_PATHS:
             try:
-                copytree(log_path, join(path_name, basename(log_path)))
+                destination = join(path_name, basename(log_path))
+                try:
+                    rmtree(destination)
+                except:
+                    pass
+                copytree(log_path, destination)
                 rmtree(path_name)
             except Error as err:
                 errors = err.args[0]
