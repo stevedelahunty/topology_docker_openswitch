@@ -51,8 +51,8 @@ from socket import AF_UNIX, SOCK_STREAM, socket, gethostname
 
 import yaml
 
-config_timeout = 900
-ops_switchd_active_timeout = 600
+config_timeout = (60 * 4 * 10) 
+ops_switchd_active_timeout = (60 * 3 * 10)
 swns_netns = '/var/run/netns/swns'
 hwdesc_dir = '/etc/openswitch/hwdesc'
 db_sock = '/var/run/openvswitch/db.sock'
@@ -87,7 +87,9 @@ sock = None
 
 
 def create_interfaces():
+
     # Read ports from hardware description
+    logging.info('   Reading ports from hardware description...')
     with open('{}/ports.yaml'.format(hwdesc_dir), 'r') as fd:
         ports_hwdesc = yaml.load(fd)
     hwports = [str(p['name']) for p in ports_hwdesc['ports']]
@@ -134,7 +136,9 @@ def create_interfaces():
             )
         )
         try:
+            logging.info(rename_int.format(**locals()))
             check_call(shsplit(rename_int.format(**locals())))
+            logging.info(netns_cmd_tpl.format(hwport=hwport))
             check_call(shsplit(netns_cmd_tpl.format(hwport=hwport)))
         except:
             raise Exception('Failed to map ports with port labels')
@@ -149,12 +153,27 @@ def create_interfaces():
             logging.info('  - Port {} already present.'.format(hwport))
             continue
 
+
+        logging.info('  - Waiting for port {}...'.format(hwport))
+
+        for i in range(0, config_timeout):
+           if check_call('ip netns exec swns ls /sys/class/net/{hwport}'.format(hwport=hwport)):
+               sleep(0.1)
+           else:
+               break
+        else:
+           raise Exception('Timed out while waiting for {0}'.format(hwport))
+
         logging.info('  - Port {} created.'.format(hwport))
+
+        logging.info(create_cmd_tpl.format(hwport=hwport))
         try:
             check_call(shsplit(create_cmd_tpl.format(hwport=hwport)))
         except:
             raise Exception('Failed to create tuntap')
 
+        logging.info('OK')
+        logging.info(netns_cmd_tpl.format(hwport=hwport))
         try:
             check_call(shsplit(netns_cmd_tpl.format(hwport=hwport)))
         except:
@@ -195,7 +214,7 @@ def main():
     if '-d' in argv:
         logging.basicConfig(level=logging.DEBUG)
 
-    logging.info('Waiting for swns netns...')
+    logging.info('Waiting for swns netns...' + swns_netns)
     for i in range(0, config_timeout):
         if not exists(swns_netns):
             sleep(0.1)
@@ -204,7 +223,7 @@ def main():
     else:
         raise Exception('Timed out while waiting for swns.')
 
-    logging.info('Waiting for hwdesc directory...')
+    logging.info('Waiting for hwdesc directory...' + hwdesc_dir)
     for i in range(0, config_timeout):
         if not exists(hwdesc_dir):
             sleep(0.1)
@@ -213,10 +232,19 @@ def main():
     else:
         raise Exception('Timed out while waiting for hwdesc directory.')
 
+    logging.info('Waiting for eth7 to appear in swns...')
+    for i in range(0, config_timeout):
+       if call(shsplit('ip netns exec swns ls /sys/class/net/eth7')):
+           sleep(0.1)
+       else:
+           break
+    else:
+       raise Exception('Timed out while waiting for eth7')
+
     logging.info('Creating interfaces...')
     create_interfaces()
 
-    logging.info('Waiting for DB socket...')
+    logging.info('Waiting for DB socket...'+ db_sock)
     for i in range(0, config_timeout):
         if not exists(db_sock):
             sleep(0.1)
