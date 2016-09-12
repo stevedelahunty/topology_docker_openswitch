@@ -154,15 +154,15 @@ def create_interfaces():
             continue
 
 
-        logging.info('  - Waiting for port {}...'.format(hwport))
+        #logging.info('  - Waiting for port {}...'.format(hwport))
 
-        for i in range(0, config_timeout):
-           if check_call('ip netns exec swns ls /sys/class/net/{hwport}'.format(hwport=hwport)):
-               sleep(0.1)
-           else:
-               break
-        else:
-           raise Exception('Timed out while waiting for {0}'.format(hwport))
+        #for i in range(0, config_timeout):
+        #   if check_call('ip netns exec swns ls /sys/class/net/{hwport}'.format(hwport=hwport)):
+        #       sleep(0.1)
+        #   else:
+        #       break
+        #else:
+        #   raise Exception('Timed out while waiting for {0}'.format(hwport))
 
         logging.info('  - Port {} created.'.format(hwport))
 
@@ -232,14 +232,14 @@ def main():
     else:
         raise Exception('Timed out while waiting for hwdesc directory.')
 
-    logging.info('Waiting for eth7 to appear in swns...')
-    for i in range(0, config_timeout):
-       if call(shsplit('ip netns exec swns ls /sys/class/net/eth7')):
-           sleep(0.1)
-       else:
-           break
-    else:
-       raise Exception('Timed out while waiting for eth7')
+    #logging.info('Waiting for eth7 to appear in swns...')
+    #for i in range(0, config_timeout):
+    #   if call(shsplit('ip netns exec swns ls /sys/class/net/eth7')):
+    #       sleep(0.1)
+    #   else:
+    #       break
+    #else:
+    #   raise Exception('Timed out while waiting for eth7')
 
     logging.info('Creating interfaces...')
     create_interfaces()
